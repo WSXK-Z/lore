@@ -284,3 +284,47 @@ def test_urcignore_branch_switch_preserves_ignored_file(new_lore_repo):
         "branch switch with --reset should not delete files excluded by "
         ".loreignore (FilterMode::View does not check .loreignore)"
     )
+
+
+@pytest.mark.smoke
+def test_urcignore_legacy_fallback(new_lore_repo):
+    """A legacy `.urcignore` is honored as a fallback when no `.loreignore`
+    exists, and `.loreignore` takes precedence when both are present.
+
+    The repository uses the current `.lore/` format, whose primary ignore file
+    is `.loreignore`. With only a legacy `.urcignore` on disk its rules must
+    still apply to outbound operations. Once a `.loreignore` is added it becomes
+    authoritative and the `.urcignore` is no longer consulted.
+    """
+    repo: Lore = new_lore_repo()
+
+    # Only a legacy .urcignore present: its rule must be honored as a fallback.
+    with repo.open_file(".urcignore", "w+") as f:
+        f.write("legacy.tmp\n")
+
+    with repo.open_file("legacy.tmp", "w+") as f:
+        f.write("from urcignore\n")
+    with repo.open_file("kept.txt", "w+") as f:
+        f.write("tracked\n")
+
+    output = repo.repository_status(unstaged=True)
+    assert "legacy.tmp" not in output, (
+        "legacy .urcignore should be honored as a fallback when no .loreignore exists"
+    )
+    assert "kept.txt" in output, "non-ignored file should still be reported"
+
+    # Adding a .loreignore makes it authoritative: it no longer ignores
+    # legacy.tmp (now reported), while its own rule excludes primary.tmp.
+    with repo.open_file(".loreignore", "w+") as f:
+        f.write("primary.tmp\n")
+
+    with repo.open_file("primary.tmp", "w+") as f:
+        f.write("from loreignore\n")
+
+    output = repo.repository_status(unstaged=True)
+    assert "primary.tmp" not in output, (
+        ".loreignore should take precedence and exclude its own rules"
+    )
+    assert "legacy.tmp" in output, (
+        ".urcignore must no longer be consulted once .loreignore exists"
+    )

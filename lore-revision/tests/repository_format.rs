@@ -29,7 +29,9 @@ mod tests {
 
     #[test]
     fn format_ignore_file() {
-        assert_eq!(RepositoryFormat::Urc.ignore_file(), DOT_URCIGNORE);
+        // Both formats use .loreignore as the primary ignore file; legacy
+        // .urcignore is honored only as a load_filter fallback.
+        assert_eq!(RepositoryFormat::Urc.ignore_file(), DOT_LOREIGNORE);
         assert_eq!(RepositoryFormat::Lore.ignore_file(), DOT_LOREIGNORE);
     }
 
@@ -177,6 +179,26 @@ mod tests {
         let filter = load_filter(&dir).expect("filter should load");
         // 2 user rules from .loreignore + 6 auto-generated = 8
         assert_eq!(filter.ignore.lines.len(), 8);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_filter_urc_format_falls_back_to_urcignore() {
+        use lore_revision::repository::load_filter;
+
+        // The .urcignore fallback is universal: even a legacy .urc-format
+        // repository (whose primary ignore file is now also .loreignore) loads
+        // a lone .urcignore when no .loreignore is present.
+        let dir = std::env::temp_dir().join("lore-test-ignore-fallback-urc");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(DOT_URC)).expect("create .urc dir");
+
+        std::fs::write(dir.join(DOT_URCIGNORE), "secret.txt\n").expect("write .urcignore");
+
+        let filter = load_filter(&dir).expect("filter should load");
+        // One user rule ("secret.txt") + 6 auto-generated rules = 7 lines.
+        assert_eq!(filter.ignore.lines.len(), 7);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

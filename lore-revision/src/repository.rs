@@ -1129,11 +1129,10 @@ impl RepositoryFormat {
         }
     }
 
+    /// Primary ignore file. Both formats use `.loreignore`; legacy
+    /// `.urcignore` is honored only as a fallback (see [`load_filter`]).
     pub fn ignore_file(&self) -> &'static str {
-        match self {
-            Self::Urc => DOT_URCIGNORE,
-            Self::Lore => DOT_LOREIGNORE,
-        }
+        DOT_LOREIGNORE
     }
 
     pub fn detect(path: &std::path::Path) -> Self {
@@ -2168,8 +2167,9 @@ pub fn load_filter(root_path: &Path) -> Option<Arc<filter::Filter>> {
     let format = RepositoryFormat::detect(root_path);
     let mut ignore_path = root_path.join(format.ignore_file());
 
-    // Under .lore/ format, fall back to .urcignore if .loreignore is not found.
-    if matches!(format, RepositoryFormat::Lore) && !ignore_path.exists() {
+    // Both formats use .loreignore as the primary ignore file; fall back to
+    // legacy .urcignore whenever .loreignore is not present.
+    if !ignore_path.exists() {
         let fallback = root_path.join(DOT_URCIGNORE);
         if fallback.exists() {
             ignore_path = fallback;
