@@ -5,6 +5,8 @@
 //! root node id. The verb does not touch disk.
 
 use lore_base::error::InvalidArguments;
+use lore_base::types::Hash;
+use lore_base::types::RepositoryId;
 use lore_error_set::prelude::*;
 use lore_macro::LoreArgs;
 use lore_revision::errors::StateErrors;
@@ -57,10 +59,18 @@ impl EventError for ResolvePathError {
     }
 }
 
-fn emit_resolve_complete(id: u64, node_id: NodeID, error_code: LoreErrorCode) {
+fn emit_resolve_complete(
+    id: u64,
+    node_id: NodeID,
+    repository: RepositoryId,
+    revision: Hash,
+    error_code: LoreErrorCode,
+) {
     LoreEvent::RevisionTreeResolvePathComplete(LoreRevisionTreeResolvePathCompleteEventData {
         id,
         node_id,
+        repository,
+        revision,
         error_code,
     })
     .send();
@@ -69,10 +79,12 @@ fn emit_resolve_complete(id: u64, node_id: NodeID, error_code: LoreErrorCode) {
 /// Resolve a UTF-8 path against the loaded revision tree to a `NodeID`.
 ///
 /// On success the caller receives `LORE_EVENT_REVISION_TREE_RESOLVE_PATH_COMPLETE`
-/// carrying the resolved node and `error_code = NONE` before `Complete {status: 0}`.
-/// An empty path resolves to the root node. A path that does not resolve to a
-/// node — because it does not exist or is not valid UTF-8 — completes with
-/// `error_code = INVALID_ARGUMENTS`. The verb materializes no bytes to disk.
+/// carrying the resolved node plus the `(repository, revision)` it belongs to
+/// (which differ from the handle's when the path crosses a link) and
+/// `error_code = NONE`, before `Complete {status: 0}`. An empty path resolves to
+/// the root node. A path that does not resolve to a node — because it does not
+/// exist or is not valid UTF-8 — completes with `error_code = INVALID_ARGUMENTS`.
+/// The verb materializes no bytes to disk.
 pub async fn resolve_path(
     globals: LoreGlobalArgs,
     args: LoreRevisionTreeResolvePathArgs,
@@ -94,18 +106,38 @@ async fn resolve_path_local(
         handle,
         args,
         resolve_path,
-        move || emit_resolve_complete(miss_id, INVALID_NODE, LoreErrorCode::InvalidArguments),
+        move || {
+            emit_resolve_complete(
+                miss_id,
+                INVALID_NODE,
+                RepositoryId::default(),
+                Hash::default(),
+                LoreErrorCode::InvalidArguments,
+            );
+        },
         async move |internal, args: LoreRevisionTreeResolvePathArgs| {
             let id = args.id;
             let Ok(path) = std::str::from_utf8(args.path.as_bytes()) else {
-                emit_resolve_complete(id, INVALID_NODE, LoreErrorCode::InvalidArguments);
+                emit_resolve_complete(
+                    id,
+                    INVALID_NODE,
+                    RepositoryId::default(),
+                    Hash::default(),
+                    LoreErrorCode::InvalidArguments,
+                );
                 return Err(ResolvePathError::from(InvalidArguments {
                     reason: "path is not valid UTF-8".into(),
                 }));
             };
 
             if path.is_empty() {
-                emit_resolve_complete(id, ROOT_NODE, LoreErrorCode::None);
+                emit_resolve_complete(
+                    id,
+                    ROOT_NODE,
+                    internal.repository,
+                    internal.state.revision(),
+                    LoreErrorCode::None,
+                );
                 return Ok(());
             }
 
@@ -115,7 +147,13 @@ async fn resolve_path_local(
                 .await
             {
                 Ok(link) => {
-                    emit_resolve_complete(id, link.node, LoreErrorCode::None);
+                    emit_resolve_complete(
+                        id,
+                        link.node,
+                        link.repository,
+                        link.revision,
+                        LoreErrorCode::None,
+                    );
                     Ok(())
                 }
                 Err(error) => {
@@ -128,12 +166,24 @@ async fn resolve_path_local(
                             | StateErrors::AddressNotFound(_)
                     );
                     if not_found {
-                        emit_resolve_complete(id, INVALID_NODE, LoreErrorCode::InvalidArguments);
+                        emit_resolve_complete(
+                            id,
+                            INVALID_NODE,
+                            RepositoryId::default(),
+                            Hash::default(),
+                            LoreErrorCode::InvalidArguments,
+                        );
                         Err(ResolvePathError::from(InvalidArguments {
                             reason: "path does not resolve to a node".into(),
                         }))
                     } else {
-                        emit_resolve_complete(id, INVALID_NODE, LoreErrorCode::Internal);
+                        emit_resolve_complete(
+                            id,
+                            INVALID_NODE,
+                            RepositoryId::default(),
+                            Hash::default(),
+                            LoreErrorCode::Internal,
+                        );
                         Err(ResolvePathError::internal_with_context(
                             error,
                             "State::find_node_link",
@@ -148,11 +198,20 @@ async fn resolve_path_local(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::Arc;
     use std::sync::Mutex;
 
+    use lore_base::types::Address;
+    use lore_base::types::Context;
     use lore_base::types::Hash;
     use lore_base::types::Partition;
+    use lore_revision::node::Node;
+    use lore_revision::node::NodeFlags;
+    use lore_revision::repository::RepositoryContext;
+    use lore_revision::repository::RepositoryWriteToken;
+    use lore_revision::state::State;
+    use lore_storage::hash::hash_string;
 
     use super::*;
     use crate::revision_tree::handle as rt_handle;
@@ -167,7 +226,7 @@ mod tests {
         Error(u32),
         Complete(i32),
         RevisionTreeLoaded(u64),
-        ResolvePathComplete(u64, NodeID, LoreErrorCode),
+        ResolvePathComplete(u64, NodeID, RepositoryId, Hash, LoreErrorCode),
         Other(u32),
     }
 
@@ -177,9 +236,13 @@ mod tests {
                 LoreEvent::Error(data) => Self::Error(data.error_type),
                 LoreEvent::Complete(data) => Self::Complete(data.status),
                 LoreEvent::RevisionTreeLoaded(data) => Self::RevisionTreeLoaded(data.handle_id),
-                LoreEvent::RevisionTreeResolvePathComplete(data) => {
-                    Self::ResolvePathComplete(data.id, data.node_id, data.error_code)
-                }
+                LoreEvent::RevisionTreeResolvePathComplete(data) => Self::ResolvePathComplete(
+                    data.id,
+                    data.node_id,
+                    data.repository,
+                    data.revision,
+                    data.error_code,
+                ),
                 other => Self::Other(other.discriminant()),
             }
         }
@@ -191,15 +254,73 @@ mod tests {
         }))
     }
 
-    fn resolve_outcome(events: &[CapturedEvent], id: u64) -> Option<(NodeID, LoreErrorCode)> {
+    fn resolve_outcome(
+        events: &[CapturedEvent],
+        id: u64,
+    ) -> Option<(NodeID, RepositoryId, Hash, LoreErrorCode)> {
         events.iter().find_map(|event| match event {
-            CapturedEvent::ResolvePathComplete(event_id, node_id, error_code)
-                if *event_id == id =>
-            {
-                Some((*node_id, *error_code))
-            }
+            CapturedEvent::ResolvePathComplete(
+                event_id,
+                node_id,
+                repository,
+                revision,
+                error_code,
+            ) if *event_id == id => Some((*node_id, *repository, *revision, *error_code)),
             _ => None,
         })
+    }
+
+    fn handle_state(handle: LoreRevisionTree) -> (Arc<State>, Arc<RepositoryContext>) {
+        let entry = rt_handle::REGISTRY
+            .get(&handle.handle_id)
+            .expect("handle registered");
+        (entry.state.clone(), entry.repository_context.clone())
+    }
+
+    /// Add a link node under root targeting `(repository, revision, target_node)`.
+    /// Sets `name_hash` so `find_node_link` resolves it by name.
+    async fn add_link(
+        handle: LoreRevisionTree,
+        name: &str,
+        repository: Partition,
+        revision: Hash,
+        target_node: NodeID,
+    ) -> NodeID {
+        let (state, repository_context) = handle_state(handle);
+        let node = Node {
+            flags: NodeFlags::Link.bits(),
+            name_hash: hash_string(name),
+            child: target_node,
+            address: Address {
+                hash: revision,
+                context: Context::from(repository),
+            },
+            ..Default::default()
+        };
+        state
+            .node_add(repository_context, ROOT_NODE, node, name)
+            .await
+            .expect("node_add must succeed")
+    }
+
+    /// Add `child_name` under root, then serialize the state to a committed
+    /// revision a link can point at. Returns the revision hash.
+    async fn seal_target(handle: LoreRevisionTree, child_name: &str) -> Hash {
+        let (state, repository_context) = handle_state(handle);
+        let child = Node {
+            flags: NodeFlags::File.bits(),
+            name_hash: hash_string(child_name),
+            ..Default::default()
+        };
+        state
+            .node_add(repository_context.clone(), ROOT_NODE, child, child_name)
+            .await
+            .expect("node_add child must succeed");
+        let token = RepositoryWriteToken::acquire(Path::new("link-target")).await;
+        state
+            .serialize(repository_context, &token)
+            .await
+            .expect("serialize must succeed")
     }
 
     async fn load_handle(label: &str, repository: Partition) -> (LoreRevisionTree, u64) {
@@ -255,10 +376,17 @@ mod tests {
 
         assert_eq!(status, 0, "resolving the empty path must succeed");
         let events = sink.lock().unwrap().clone();
+        let (node_id, repository, _revision, error_code) =
+            resolve_outcome(&events, 7).expect("ResolvePathComplete must fire");
         assert_eq!(
-            resolve_outcome(&events, 7),
-            Some((ROOT_NODE, LoreErrorCode::None)),
+            node_id, ROOT_NODE,
             "empty path must resolve to the root node, got {events:?}"
+        );
+        assert_eq!(error_code, LoreErrorCode::None);
+        assert_eq!(
+            repository,
+            Partition::from([0x11u8; 16]),
+            "root resolves in the handle's repository, got {events:?}"
         );
         let complete_pos = events
             .iter()
@@ -295,7 +423,7 @@ mod tests {
 
         assert_eq!(status, 1, "resolving a missing path must fail");
         let events = sink.lock().unwrap().clone();
-        let (node_id, error_code) =
+        let (node_id, _repository, _revision, error_code) =
             resolve_outcome(&events, 8).expect("ResolvePathComplete must fire for the caller id");
         assert_eq!(
             error_code,
@@ -333,7 +461,7 @@ mod tests {
 
         assert_eq!(status, 1, "a non-UTF-8 path must fail");
         let events = sink.lock().unwrap().clone();
-        let (node_id, error_code) =
+        let (node_id, _repository, _revision, error_code) =
             resolve_outcome(&events, 9).expect("ResolvePathComplete must fire for the caller id");
         assert_eq!(
             error_code,
@@ -365,7 +493,7 @@ mod tests {
 
         assert_eq!(status, 1, "resolving against an unknown handle must fail");
         let events = sink.lock().unwrap().clone();
-        let (node_id, error_code) = resolve_outcome(&events, 10)
+        let (node_id, _repository, _revision, error_code) = resolve_outcome(&events, 10)
             .expect("a handle miss must still emit ResolvePathComplete carrying the caller id");
         assert_eq!(
             error_code,
@@ -380,5 +508,87 @@ mod tests {
             events.contains(&CapturedEvent::Complete(1)),
             "a handle miss must complete with status=1, got {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_path_to_a_link_node_returns_the_link_node() {
+        let repository = Partition::from([0x77u8; 16]);
+        let (handle, store_handle_id) = load_handle("resolve-link-node", repository).await;
+        let link_id = add_link(
+            handle,
+            "link",
+            repository,
+            Hash::from([0xABu8; 32]),
+            ROOT_NODE,
+        )
+        .await;
+
+        let sink: Arc<Mutex<Vec<CapturedEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let status = resolve_path(
+            LoreGlobalArgs::default(),
+            LoreRevisionTreeResolvePathArgs {
+                id: 11,
+                handle,
+                path: LoreString::from_str("link"),
+            },
+            make_callback(sink.clone()),
+        )
+        .await;
+
+        assert_eq!(status, 0, "resolving to a link node must succeed");
+        let events = sink.lock().unwrap().clone();
+        let (node_id, resolved_repository, _revision, error_code) =
+            resolve_outcome(&events, 11).expect("ResolvePathComplete must fire");
+        assert_eq!(error_code, LoreErrorCode::None);
+        assert_eq!(
+            node_id, link_id,
+            "must resolve to the link node itself, not its target, got {events:?}"
+        );
+        assert_eq!(
+            resolved_repository, repository,
+            "the link node lives in the handle's repository, got {events:?}"
+        );
+
+        release(handle, store_handle_id);
+    }
+
+    #[tokio::test]
+    async fn resolve_path_through_a_link_returns_the_target_repository_and_revision() {
+        let repository = Partition::from([0x88u8; 16]);
+        let (handle, store_handle_id) = load_handle("resolve-link-through", repository).await;
+        let target_revision = seal_target(handle, "doc").await;
+        add_link(handle, "link", repository, target_revision, ROOT_NODE).await;
+
+        let sink: Arc<Mutex<Vec<CapturedEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let status = resolve_path(
+            LoreGlobalArgs::default(),
+            LoreRevisionTreeResolvePathArgs {
+                id: 12,
+                handle,
+                path: LoreString::from_str("link/doc"),
+            },
+            make_callback(sink.clone()),
+        )
+        .await;
+
+        assert_eq!(status, 0, "resolving through a link must succeed");
+        let events = sink.lock().unwrap().clone();
+        let (node_id, resolved_repository, resolved_revision, error_code) =
+            resolve_outcome(&events, 12).expect("ResolvePathComplete must fire");
+        assert_eq!(error_code, LoreErrorCode::None);
+        assert_ne!(
+            node_id, INVALID_NODE,
+            "must resolve to the target's node, got {events:?}"
+        );
+        assert_eq!(
+            resolved_repository, repository,
+            "must report the link target's repository, got {events:?}"
+        );
+        assert_eq!(
+            resolved_revision, target_revision,
+            "must report the link target's revision, got {events:?}"
+        );
+
+        release(handle, store_handle_id);
     }
 }

@@ -12,6 +12,7 @@
 use lore_base::types::Address;
 use lore_base::types::Context;
 use lore_base::types::Hash;
+use lore_base::types::RepositoryId;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -31,8 +32,9 @@ pub struct LoreRevisionTreeLoadedEventData {
 }
 
 /// Terminal per-call event for `resolve_path`. On success `error_code ==
-/// None` and `node_id` is the resolved node; on failure `node_id` is
-/// undefined and `error_code` is populated.
+/// None`, `node_id` is the resolved node, and `repository`/`revision` identify
+/// the tree it belongs to (they differ from the handle's when the path crosses
+/// a link). On failure `node_id` is undefined and `error_code` is populated.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +43,10 @@ pub struct LoreRevisionTreeResolvePathCompleteEventData {
     pub id: u64,
     /// The resolved node.
     pub node_id: NodeID,
+    /// Repository the resolved node belongs to.
+    pub repository: RepositoryId,
+    /// Revision the resolved node belongs to.
+    pub revision: Hash,
     /// The outcome of the call.
     pub error_code: LoreErrorCode,
 }
@@ -252,6 +258,25 @@ pub struct LoreRevisionTreeCommitCompleteEventData {
 pub struct LoreRevisionTreeCloseCompleteEventData {
     /// Correlation id of the originating call.
     pub id: u64,
+    /// The outcome of the call.
+    pub error_code: LoreErrorCode,
+}
+
+/// Header for `list_children`, emitted once before any child event. Carries
+/// the `(repository, revision)` the listing targets — the handle's own tree,
+/// or a link target's tree after the link is resolved — so the caller can
+/// reopen that tree to act on the children's node ids. On failure carries the
+/// outcome with a zeroed `repository`/`revision` and no children follow.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoreRevisionTreeListChildrenBeginEventData {
+    /// Correlation id of the originating call.
+    pub id: u64,
+    /// Repository the listed children belong to.
+    pub repository: RepositoryId,
+    /// Revision the listed children belong to.
+    pub revision: Hash,
     /// The outcome of the call.
     pub error_code: LoreErrorCode,
 }

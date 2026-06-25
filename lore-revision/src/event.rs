@@ -84,6 +84,7 @@ use crate::event::revision_tree::LoreRevisionTreeChildEventData;
 use crate::event::revision_tree::LoreRevisionTreeCloseCompleteEventData;
 use crate::event::revision_tree::LoreRevisionTreeCommitCompleteEventData;
 use crate::event::revision_tree::LoreRevisionTreeDeleteCompleteEventData;
+use crate::event::revision_tree::LoreRevisionTreeListChildrenBeginEventData;
 use crate::event::revision_tree::LoreRevisionTreeLoadedEventData;
 use crate::event::revision_tree::LoreRevisionTreeMetadataGetCompleteEventData;
 use crate::event::revision_tree::LoreRevisionTreeMetadataSetCompleteEventData;
@@ -1098,6 +1099,8 @@ pub enum LoreEvent {
     RevisionTreeCommitComplete(LoreRevisionTreeCommitCompleteEventData),
     /// A close call completed.
     RevisionTreeCloseComplete(LoreRevisionTreeCloseCompleteEventData),
+    /// A list-children call began; carries the target repository and revision.
+    RevisionTreeListChildrenBegin(LoreRevisionTreeListChildrenBeginEventData),
     // Mutable-store API events are appended here rather than grouped with the other storage
     // events above so that adding them does not renumber the `#[repr(C, u32)]` discriminants of
     // the existing variants — new variants go at the end of this enum.

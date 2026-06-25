@@ -2523,13 +2523,18 @@ typedef struct lore_revision_tree_loaded_event_data_t {
 typedef uint32_t lore_node_id_t;
 
 // Terminal per-call event for `resolve_path`. On success `error_code ==
-// None` and `node_id` is the resolved node; on failure `node_id` is
-// undefined and `error_code` is populated.
+// None`, `node_id` is the resolved node, and `repository`/`revision` identify
+// the tree it belongs to (they differ from the handle's when the path crosses
+// a link). On failure `node_id` is undefined and `error_code` is populated.
 typedef struct lore_revision_tree_resolve_path_complete_event_data_t {
   // Correlation id of the originating call.
   uint64_t id;
   // The resolved node.
   lore_node_id_t node_id;
+  // Repository the resolved node belongs to.
+  lore_repository_id_t repository;
+  // Revision the resolved node belongs to.
+  struct lore_hash_t revision;
   // The outcome of the call.
   enum lore_error_code_t error_code;
 } lore_revision_tree_resolve_path_complete_event_data_t;
@@ -2708,6 +2713,22 @@ typedef struct lore_revision_tree_close_complete_event_data_t {
   // The outcome of the call.
   enum lore_error_code_t error_code;
 } lore_revision_tree_close_complete_event_data_t;
+
+// Header for `list_children`, emitted once before any child event. Carries
+// the `(repository, revision)` the listing targets — the handle's own tree,
+// or a link target's tree after the link is resolved — so the caller can
+// reopen that tree to act on the children's node ids. On failure carries the
+// outcome with a zeroed `repository`/`revision` and no children follow.
+typedef struct lore_revision_tree_list_children_begin_event_data_t {
+  // Correlation id of the originating call.
+  uint64_t id;
+  // Repository the listed children belong to.
+  lore_repository_id_t repository;
+  // Revision the listed children belong to.
+  struct lore_hash_t revision;
+  // The outcome of the call.
+  enum lore_error_code_t error_code;
+} lore_revision_tree_list_children_begin_event_data_t;
 
 // Terminal per-item event for `mutable_load`. On success `error_code == None` and `value` is
 // the loaded value hash (`Hash::default()` when the key holds a null/removed value); on miss
@@ -3226,6 +3247,8 @@ enum lore_event_id_t {
   LORE_EVENT_REVISION_TREE_COMMIT_COMPLETE,
   // A close call completed.
   LORE_EVENT_REVISION_TREE_CLOSE_COMPLETE,
+  // A list-children call began; carries the target repository and revision.
+  LORE_EVENT_REVISION_TREE_LIST_CHILDREN_BEGIN,
   // A mutable-load item completed.
   LORE_EVENT_STORAGE_MUTABLE_LOAD_ITEM_COMPLETE,
   // A mutable-store item completed.
@@ -3467,6 +3490,7 @@ typedef struct lore_event_t {
     struct lore_revision_tree_metadata_get_complete_event_data_t revision_tree_metadata_get_complete;
     struct lore_revision_tree_commit_complete_event_data_t revision_tree_commit_complete;
     struct lore_revision_tree_close_complete_event_data_t revision_tree_close_complete;
+    struct lore_revision_tree_list_children_begin_event_data_t revision_tree_list_children_begin;
     struct lore_storage_mutable_load_item_complete_event_data_t storage_mutable_load_item_complete;
     struct lore_storage_mutable_store_item_complete_event_data_t storage_mutable_store_item_complete;
     struct lore_storage_mutable_compare_and_swap_item_complete_event_data_t storage_mutable_compare_and_swap_item_complete;
@@ -10696,3 +10720,17 @@ int32_t lore_revision_tree_resolve_path(const struct lore_global_args_t *globals
 void lore_revision_tree_resolve_path_async(const struct lore_global_args_t *globals,
                                            const struct lore_revision_tree_resolve_path_args_t *args,
                                            struct lore_event_callback_config_t callback);
+
+// Stream the children of a directory node in a loaded revision tree.
+//
+// | Terminal event                       | Payload                                | Notes                                                          |
+// |--------------------------------------|----------------------------------------|----------------------------------------------------------------|
+// | `LORE_EVENT_REVISION_TREE_CHILD`     | `lore_revision_tree_child_event_data_t` | One per child; an empty directory emits none before `Complete` |
+int32_t lore_revision_tree_list_children(const struct lore_global_args_t *globals,
+                                         const struct lore_revision_tree_list_children_args_t *args,
+                                         struct lore_event_callback_config_t callback);
+
+// Stream the children of a directory node (async variant).
+void lore_revision_tree_list_children_async(const struct lore_global_args_t *globals,
+                                            const struct lore_revision_tree_list_children_args_t *args,
+                                            struct lore_event_callback_config_t callback);

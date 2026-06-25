@@ -7305,3 +7305,40 @@ pub extern "C" fn lore_revision_tree_resolve_path_async(
         crate::revision_tree::resolve_path::resolve_path,
     );
 }
+
+pub type LoreRevisionTreeListChildrenArgs =
+    crate::revision_tree::list_children::LoreRevisionTreeListChildrenArgs;
+
+/// Stream the children of a directory node in a loaded revision tree.
+///
+/// | Terminal event                       | Payload                                | Notes                                                          |
+/// |--------------------------------------|----------------------------------------|----------------------------------------------------------------|
+/// | `LORE_EVENT_REVISION_TREE_CHILD`     | `lore_revision_tree_child_event_data_t` | One per child; an empty directory emits none before `Complete` |
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_revision_tree_list_children(
+    globals: &LoreGlobalArgs,
+    args: &LoreRevisionTreeListChildrenArgs,
+    callback: LoreEventCallbackConfig,
+) -> i32 {
+    run_synchronously(
+        globals,
+        args,
+        callback,
+        crate::revision_tree::list_children::list_children,
+    )
+}
+
+/// Stream the children of a directory node (async variant).
+#[unsafe(no_mangle)]
+pub extern "C" fn lore_revision_tree_list_children_async(
+    globals: &LoreGlobalArgs,
+    args: &LoreRevisionTreeListChildrenArgs,
+    callback: LoreEventCallbackConfig,
+) {
+    run_asynchronously(
+        globals,
+        args,
+        callback,
+        crate::revision_tree::list_children::list_children,
+    );
+}

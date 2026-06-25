@@ -146,4 +146,5 @@ pub enum LoreCommand {
     RevisionTreeLoad(crate::revision_tree::load::LoreRevisionTreeLoadArgs),
     RevisionTreeClose(crate::revision_tree::close::LoreRevisionTreeCloseArgs),
     RevisionTreeResolvePath(crate::revision_tree::resolve_path::LoreRevisionTreeResolvePathArgs),
+    RevisionTreeListChildren(crate::revision_tree::list_children::LoreRevisionTreeListChildrenArgs),
 }
